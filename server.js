@@ -10,12 +10,11 @@ app.use(express.json());
 // ─── CORS ────────────────────────────────────────────────
 app.use(cors({ origin: '*' }));
 
-// ─── YOUR CREDENTIALS (FINAL) ───────────────────────────
-// Using the keys you provided.
-// If you prefer to use Render environment variables, replace these with process.env...
+// ─── YOUR CREDENTIALS ────────────────────────────────────
+// 🔴 IMPORTANT: Replace these with your actual LIVE keys from account.nowpayments.io
 const API_KEY = '42T21GY-P6D4QMW-NSMAV55-MDHNY0F';
 const IPN_SECRET = 'PluBAuPAVfhGGm/PL4JdTd0cAUSAJzQd';
-const API_URL = 'https://api.nowpayments.io/v1';     // LIVE, not sandbox
+const API_URL = 'https://api.nowpayments.io/v1';
 const WEBHOOK_URL = 'https://amz-backend-6isd.onrender.com/api/webhook';
 
 // ─── CURRENCY MAP ──────────────────────────────────────
@@ -39,6 +38,8 @@ const currencyMap = {
 // ─── CREATE PAYMENT ──────────────────────────────────
 app.post('/api/create-payment', async (req, res) => {
   const { amount, currency, network } = req.body;
+
+  console.log('📥 Received deposit request:', { amount, currency, network });
 
   if (!amount || isNaN(amount) || amount <= 0) {
     return res.status(400).json({ error: 'Invalid amount' });
@@ -69,6 +70,8 @@ app.post('/api/create-payment', async (req, res) => {
 
     const { payment_id, pay_address, pay_amount, price_amount, price_currency } = response.data;
 
+    console.log('✅ Payment created:', payment_id);
+
     res.json({
       success: true,
       paymentId: payment_id,
@@ -92,6 +95,8 @@ app.post('/api/webhook', (req, res) => {
   const payload = req.body;
   const signature = req.headers['x-nowpayments-sig'];
 
+  console.log('📨 Webhook received');
+
   const computed = crypto
     .createHmac('sha512', IPN_SECRET)
     .update(JSON.stringify(payload))
@@ -102,13 +107,15 @@ app.post('/api/webhook', (req, res) => {
     return res.status(401).send('Invalid signature');
   }
 
-  console.log('✅ Webhook received:', payload);
+  console.log('✅ Webhook verified:', payload);
 
   const { payment_status, order_id, price_amount } = payload;
 
   if (payment_status === 'confirmed') {
     console.log(`💰 Payment confirmed for ${order_id}: $${price_amount}`);
-    // 🎯 Here you would credit the user's balance in your database
+    // 🎯 HERE: Credit the user's balance in your database
+  } else if (payment_status === 'finished') {
+    console.log(`✅ Payment finished for ${order_id}: $${price_amount}`);
   } else {
     console.log(`ℹ️ Payment status: ${payment_status} for ${order_id}`);
   }
