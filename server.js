@@ -1,4 +1,3 @@
-// server.js
 const express = require('express');
 const axios = require('axios');
 const crypto = require('crypto');
@@ -8,26 +7,18 @@ require('dotenv').config();
 const app = express();
 app.use(express.json());
 
-// ─── ENABLE CORS (Critical for cross-origin requests) ───
-app.use(cors({
-  origin: '*', // For production, you can restrict to your domain:
-  // origin: 'https://amzdistributor.com'
-}));
+// ─── CORS ────────────────────────────────────────────────
+app.use(cors({ origin: '*' }));
 
-// Your credentials – replace with your sandbox keys
-const API_KEY = '42T21GY-P6D4QMW-NSMAV55-MDHNY0F'; // ← paste your sandbox API key here
-const IPN_SECRET = 'PluBAuPAVfhGGm/PL4JdTd0cAUSAJzQd'; // ← paste your sandbox IPN secret here
-const API_URL = 'https://api-sandbox.nowpayments.io/v1';
+// ─── YOUR CREDENTIALS (FINAL) ───────────────────────────
+// Using the keys you provided.
+// If you prefer to use Render environment variables, replace these with process.env...
+const API_KEY = '42T21GY-P6D4QMW-NSMAV55-MDHNY0F';
+const IPN_SECRET = 'PluBAuPAVfhGGm/PL4JdTd0cAUSAJzQd';
+const API_URL = 'https://api.nowpayments.io/v1';     // LIVE, not sandbox
+const WEBHOOK_URL = 'https://amz-backend-6isd.onrender.com/api/webhook';
 
-
-const WEBHOOK_URL = 'https://amz-backend.6tisd.onrender.com/api/webhook';
-
-if (!API_KEY || !IPN_SECRET || !API_URL || !WEBHOOK_URL) {
-  console.error('❌ Missing required environment variables!');
-  process.exit(1);
-}
-
-// ─── CURRENCY MAP (Token + Network → NOWPayments currency code) ───
+// ─── CURRENCY MAP ──────────────────────────────────────
 const currencyMap = {
   'USDT': {
     'ERC20': 'usdterc20',
@@ -45,11 +36,10 @@ const currencyMap = {
   'SOL': { 'SOL': 'sol' },
 };
 
-// ─── CREATE PAYMENT (Called from frontend) ─────────────
+// ─── CREATE PAYMENT ──────────────────────────────────
 app.post('/api/create-payment', async (req, res) => {
   const { amount, currency, network } = req.body;
 
-  // Validate input
   if (!amount || isNaN(amount) || amount <= 0) {
     return res.status(400).json({ error: 'Invalid amount' });
   }
@@ -68,7 +58,6 @@ app.post('/api/create-payment', async (req, res) => {
         pay_currency: payCurrency,
         order_id: `ORDER-${Date.now()}`,
         ipn_callback_url: WEBHOOK_URL,
-        // ✅ NO "case" parameter – it's only for Sandbox!
       },
       {
         headers: {
@@ -98,12 +87,11 @@ app.post('/api/create-payment', async (req, res) => {
   }
 });
 
-// ─── WEBHOOK (Receives payment confirmations) ──────────
+// ─── WEBHOOK ──────────────────────────────────────────
 app.post('/api/webhook', (req, res) => {
   const payload = req.body;
   const signature = req.headers['x-nowpayments-sig'];
 
-  // Verify signature (security)
   const computed = crypto
     .createHmac('sha512', IPN_SECRET)
     .update(JSON.stringify(payload))
@@ -120,20 +108,15 @@ app.post('/api/webhook', (req, res) => {
 
   if (payment_status === 'confirmed') {
     console.log(`💰 Payment confirmed for ${order_id}: $${price_amount}`);
-    // 🎯 HERE: Credit the user's balance in your database
-  } else if (payment_status === 'expired') {
-    console.log(`⏰ Payment expired for ${order_id}`);
-  } else if (payment_status === 'failed') {
-    console.log(`❌ Payment failed for ${order_id}`);
+    // 🎯 Here you would credit the user's balance in your database
   } else {
     console.log(`ℹ️ Payment status: ${payment_status} for ${order_id}`);
   }
 
-  // Always respond with "SUCCESS" to stop retries
   res.status(200).send('SUCCESS');
 });
 
-// ─── HEALTH CHECK (optional) ──────────────────────────
+// ─── HEALTH CHECK ──────────────────────────────────────
 app.get('/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
