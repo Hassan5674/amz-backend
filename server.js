@@ -1,136 +1,112 @@
+// server.js
+require('dotenv').config(); // Load environment variables from .env (or Render's dashboard)
 const express = require('express');
 const axios = require('axios');
 const crypto = require('crypto');
-const cors = require('cors');
-require('dotenv').config();
 
 const app = express();
-app.use(express.json());
+app.use(express.json()); // IMPORTANT: Required to parse JSON webhook payloads
 
-// ─── CORS ────────────────────────────────────────────────
-app.use(cors({ origin: '*' }));
+// ==========================================
+// 1. CONFIGURATION (Put your keys here OR in Render Env Vars)
+// ==========================================
+const PORT = process.env.PORT || 3000;
+const NOW_API_KEY = process.env.NOW_API_KEY; // From NOWPayments dashboard
+const NOW_IPN_SECRET = process.env.NOW_IPN_SECRET; // From NOWPayments dashboard
 
-// ─── YOUR CREDENTIALS ────────────────────────────────────
-// 🔴 IMPORTANT: Replace these with your actual LIVE keys from account.nowpayments.io
-const API_KEY = '42T21GY-P6D4QMW-NSMAV55-MDHNY0F';
-const IPN_SECRET = 'PluBAuPAVfhGGm/PL4JdTd0cAUSAJzQd';
-const API_URL = 'https://api.nowpayments.io/v1';
+// Your exact webhook URL
 const WEBHOOK_URL = 'https://amz-backend-6isd.onrender.com/api/webhook';
 
-// ─── CURRENCY MAP ──────────────────────────────────────
-const currencyMap = {
-  'USDT': {
-    'ERC20': 'usdterc20',
-    'BEP20': 'usdtbep20',
-    'TRC20': 'usdttrc20',
-    'SOL': 'usdtsol',
-  },
-  'USDC': {
-    'ERC20': 'usdcerc20',
-    'BEP20': 'usdcbep20',
-    'SOL': 'usdcsol',
-  },
-  'BTC': { 'BTC': 'btc' },
-  'ETH': { 'ERC20': 'eth' },
-  'SOL': { 'SOL': 'sol' },
-};
-
-// ─── CREATE PAYMENT ──────────────────────────────────
+// ==========================================
+// 2. CREATE PAYMENT ROUTE (For your frontend)
+// ==========================================
+// This route is called when a user wants to pay with any of the 300+ coins
 app.post('/api/create-payment', async (req, res) => {
-  const { amount, currency, network } = req.body;
+    const { price_amount, price_currency, pay_currency, order_id } = req.body;
 
-  console.log('📥 Received deposit request:', { amount, currency, network });
+    // Basic validation
+    if (!price_amount || !price_currency || !pay_currency || !order_id) {
+        return res.status(400).json({ error: 'Missing required fields' });
+    }
 
-  if (!amount || isNaN(amount) || amount <= 0) {
-    return res.status(400).json({ error: 'Invalid amount' });
-  }
+    try {
+        // Call NOWPayments to generate a payment address
+        const response = await axios.post('https://api.nowpayments.io/v1/payment', {
+            price_amount: price_amount,       // e.g., 100
+            price_currency: price_currency,   // e.g., 'usd'
+            pay_currency: pay_currency,       // e.g., 'btc', 'eth', 'usdt', 'sol' (ANY coin)
+            order_id: order_id,               // Your unique internal order ID
+            ipn_callback_url: WEBHOOK_URL     // The webhook that verifies payment
+        }, {
+            headers: { 'x-api-key': NOW_API_KEY }
+        });
 
-  const payCurrency = currencyMap[currency]?.[network];
-  if (!payCurrency) {
-    return res.status(400).json({ error: 'Unsupported currency/network combination' });
-  }
+        // Send the payment address and amount back to your user
+        res.json({
+            pay_address: response.data.pay_address,
+            pay_amount: response.data.pay_amount,
+            payment_id: response.data.payment_id,
+            pay_currency: response.data.pay_currency
+        });
 
-  try {
-    const response = await axios.post(
-      `${API_URL}/payment`,
-      {
-        price_amount: parseFloat(amount),
-        price_currency: 'usd',
-        pay_currency: payCurrency,
-        order_id: `ORDER-${Date.now()}`,
-        ipn_callback_url: WEBHOOK_URL,
-      },
-      {
-        headers: {
-          'x-api-key': API_KEY,
-          'Content-Type': 'application/json',
-        },
-      }
-    );
-
-    const { payment_id, pay_address, pay_amount, price_amount, price_currency } = response.data;
-
-    console.log('✅ Payment created:', payment_id);
-
-    res.json({
-      success: true,
-      paymentId: payment_id,
-      address: pay_address,
-      amount: pay_amount,
-      currency: payCurrency,
-      fiatAmount: price_amount,
-      fiatCurrency: price_currency,
-    });
-  } catch (error) {
-    console.error('❌ NOWPayments error:', error.response?.data || error.message);
-    res.status(500).json({
-      error: 'Payment creation failed',
-      details: error.response?.data?.message || error.message,
-    });
-  }
+    } catch (error) {
+        console.error('Error creating payment:', error.response?.data || error.message);
+        res.status(500).json({ error: 'Failed to create payment' });
+    }
 });
 
-// ─── WEBHOOK ──────────────────────────────────────────
+// ==========================================
+// 3. WEBHOOK ROUTE (The "No RPC" Verification)
+// ==========================================
+// NOWPayments sends a POST request here when the payment is done
 app.post('/api/webhook', (req, res) => {
-  const payload = req.body;
-  const signature = req.headers['x-nowpayments-sig'];
+    const signature = req.headers['x-nowpayments-sig'];
+    const payload = JSON.stringify(req.body);
+    
+    // 1. VERIFY SIGNATURE (Security Check - stops fake payments)
+    const hmac = crypto.createHmac('sha512', NOW_IPN_SECRET);
+    hmac.update(payload);
+    const digest = hmac.digest('hex');
 
-  console.log('📨 Webhook received');
+    if (digest !== signature) {
+        console.error('Invalid signature detected!');
+        return res.status(401).send('Invalid signature');
+    }
 
-  const computed = crypto
-    .createHmac('sha512', IPN_SECRET)
-    .update(JSON.stringify(payload))
-    .digest('hex');
+    // 2. PROCESS PAYMENT STATUS
+    const { payment_status, payment_id, actually_paid, order_id } = req.body;
 
-  if (computed !== signature) {
-    console.error('❌ Invalid webhook signature');
-    return res.status(401).send('Invalid signature');
-  }
+    if (payment_status === 'finished' || payment_status === 'confirmed') {
+        console.log(`Payment confirmed! Order: ${order_id}, Payment ID: ${payment_id}, Amount: ${actually_paid}`);
+        
+        // ==========================================
+        // TODO: PUT YOUR DATABASE LOGIC HERE
+        // Example: 
+        // const user = await db.findUserByOrderId(order_id);
+        // await db.updateUserBalance(user.id, actually_paid);
+        // ==========================================
+        
+        // (Optional) Send a success email or notification to the user
+    } else if (payment_status === 'partially_paid') {
+        console.log(`Partially paid for order: ${order_id}`);
+        // Handle partial payments (if you allow them)
+    } else {
+        console.log(`Payment status update: ${payment_status} for order ${order_id}`);
+    }
 
-  console.log('✅ Webhook verified:', payload);
-
-  const { payment_status, order_id, price_amount } = payload;
-
-  if (payment_status === 'confirmed') {
-    console.log(`💰 Payment confirmed for ${order_id}: $${price_amount}`);
-    // 🎯 HERE: Credit the user's balance in your database
-  } else if (payment_status === 'finished') {
-    console.log(`✅ Payment finished for ${order_id}: $${price_amount}`);
-  } else {
-    console.log(`ℹ️ Payment status: ${payment_status} for ${order_id}`);
-  }
-
-  res.status(200).send('SUCCESS');
+    // 3. ALWAYS SEND 200 OK
+    // If you don't send this, NOWPayments will keep retrying the webhook
+    res.sendStatus(200);
 });
 
-// ─── HEALTH CHECK ──────────────────────────────────────
-app.get('/health', (req, res) => {
-  res.json({ status: 'ok', timestamp: new Date().toISOString() });
+// Fallback route for checking if server is online
+app.get('/', (req, res) => {
+    res.send('Payment backend is running!');
 });
 
-// ─── START SERVER ──────────────────────────────────────
-const PORT = process.env.PORT || 3000;
+// ==========================================
+// 4. START SERVER
+// ==========================================
 app.listen(PORT, () => {
-  console.log(`🚀 Server running on port ${PORT}`);
-  console.log(`🔗 Webhook URL: ${WEBHOOK_URL}`);
+    console.log(`Server is running on port ${PORT}`);
 });
