@@ -8,8 +8,10 @@ const app = express();
 app.use(express.json());
 
 const PORT = process.env.PORT || 3000;
-const NOW_API_KEY = process.env.42T21GY-P6D4QMW-NSMAV55-MDHNY0F;
-const NOW_IPN_SECRET = process.env.PluBAuPAVfhGGm/PL4JdTd0cAUSAJzQd;
+
+// CORRECTED VERSION: You must set these in Render, not type them here!
+const NOW_API_KEY = process.env.NOW_API_KEY; 
+const NOW_IPN_SECRET = process.env.NOW_IPN_SECRET; 
 const WEBHOOK_URL = 'https://amz-backend-6isd.onrender.com/api/webhook';
 
 // In-memory store to link your order_id to NOWPayments payment_id
